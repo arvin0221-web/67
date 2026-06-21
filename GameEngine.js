@@ -2,6 +2,7 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   EmbedBuilder, StringSelectMenuBuilder, ChannelType,
+  PermissionsBitField,
 } from 'discord.js';
 import { ROLES, ROLE_NAMES, TEAM, GAME_PHASE, EMOJIS } from './constants.js';
 import { GameState } from './GameState.js';
@@ -26,9 +27,6 @@ export function destroyGame(channelId) {
 }
 
 // ── 討論串管理 ──────────────────────────────────────────
-// game.threads: Map<key, thread>
-//   key = 'wolf_room'     → 狼人共用密室
-//   key = playerId        → 神職/平民個人密室
 
 async function createThread(channel, name, memberIds) {
   try {
@@ -65,37 +63,29 @@ async function sendToThread(game, key, payload) {
   try { await thread.send(payload); } catch (e) { console.error(`討論串發訊失敗[${key}]:`, e.message); }
 }
 
-// ── 建立所有討論串 ──────────────────────────────────────
-
 export async function setupThreads(game, channel, client) {
   game.threads = new Map();
 
-  // 狼人共用密室（所有真人狼人加進同一間）
+  // 狼人共用密室
   const realWolves = game.aliveWolves.filter(p => !p.isBot);
   if (realWolves.length > 0) {
-    const wolfThread = await createThread(
-      channel,
-      '🐺 狼人密室',
-      realWolves.map(p => p.id)
-    );
+    const wolfThread = await createThread(channel, '🐺 狼人密室', realWolves.map(p => p.id));
     if (wolfThread) {
       game.threads.set('wolf_room', wolfThread);
-      // 每個真人狼人的 id 也對應到同一個 thread（方便查找）
       for (const w of realWolves) game.threads.set(w.id, wolfThread);
     }
   }
 
-  // 神職個人密室（預言家、女巫、獵人）
+  // 神職個人密室
   const specials = game.alivePlayers.filter(p =>
     !p.isBot && [ROLES.SEER, ROLES.WITCH, ROLES.HUNTER].includes(p.role)
   );
   for (const player of specials) {
-    const roleName = ROLE_NAMES[player.role];
-    const thread = await createThread(channel, `${roleName} ${player.username} 的密室`, [player.id]);
+    const thread = await createThread(channel, `${ROLE_NAMES[player.role]} ${player.username} 的密室`, [player.id]);
     if (thread) game.threads.set(player.id, thread);
   }
 
-  // 平民個人密室（只通知身份用）
+  // 平民個人密室（只收開局通知）
   const villagers = game.alivePlayers.filter(p => !p.isBot && p.role === ROLES.VILLAGER);
   for (const player of villagers) {
     const thread = await createThread(channel, `👤 ${player.username} 的密室`, [player.id]);
@@ -103,7 +93,48 @@ export async function setupThreads(game, channel, client) {
   }
 }
 
-// ── Embeds ──────────────────────────────────────────────
+// ── 頻道發言權限控制 ────────────────────────────────────
+// 記錄目前允許發言的玩家ID（null = 所有人都可以）
+// game.speakingPlayerId = string | null
+
+async function lockChannelForPlayer(game, channel, allowPlayerId) {
+  // 記錄目前發言者
+  game.speakingPlayerId = allowPlayerId;
+
+  // 取得所有真人玩家的 Discord member
+  const humanPlayers = game.alivePlayers.filter(p => !p.isBot);
+  for (const player of humanPlayers) {
+    try {
+      const member = await channel.guild.members.fetch(player.id);
+      if (player.id === allowPlayerId) {
+        // 允許發言
+        await channel.permissionOverwrites.edit(member, {
+          SendMessages: true,
+        });
+      } else {
+        // 禁止發言
+        await channel.permissionOverwrites.edit(member, {
+          SendMessages: false,
+        });
+      }
+    } catch (e) { console.error(`權限設定失敗 ${player.username}:`, e.message); }
+  }
+}
+
+async function unlockChannel(game, channel) {
+  game.speakingPlayerId = null;
+  const humanPlayers = [...game.players.values()].filter(p => !p.isBot);
+  for (const player of humanPlayers) {
+    try {
+      const member = await channel.guild.members.fetch(player.id);
+      await channel.permissionOverwrites.edit(member, {
+        SendMessages: null, // 恢復預設
+      });
+    } catch (e) { console.error(`權限恢復失敗 ${player.username}:`, e.message); }
+  }
+}
+
+// ── Embeds & Buttons ────────────────────────────────────
 
 export function buildLobbyEmbed(game) {
   const playerList = game.players.size > 0
@@ -114,7 +145,7 @@ export function buildLobbyEmbed(game) {
     .setColor(0x2B2D31)
     .setTitle(`${EMOJIS.VILLAGE} 狼人殺 — ${game.mode.name}`)
     .setDescription(`**勝利條件**：${game.mode.winCondition === 'kill_all_specials'
-      ? '屠城局（狼人殺光所有好人=勝）' : '屠邊局（狼人殺光平民或神職=勝）'}`)
+      ? '屠城局（狼人殺光所有好人=勝）' : '屠邊局（狼人殺光平民或神職其中一邊=勝）'}`)
     .addFields(
       { name: '角色配置', value: roleList },
       { name: `玩家列表 (${game.players.size}/${game.mode.total})`, value: playerList },
@@ -160,6 +191,9 @@ export async function startNight(game, channel, client) {
   game.wolfTarget = null;
   game.witchPoisonTarget = null;
 
+  // 夜晚鎖定頻道（所有玩家都不能發言）
+  await lockChannelForPlayer(game, channel, null);
+
   await channel.send({
     embeds: [new EmbedBuilder().setColor(0x1a1a2e)
       .setTitle(`${EMOJIS.MOON} 第 ${game.day} 夜`)
@@ -177,7 +211,6 @@ async function phaseWerewolf(game, channel, client) {
   const realWolves = wolves.filter(p => !p.isBot);
   const botWolves  = wolves.filter(p => p.isBot);
 
-  // AI 狼人預先決定目標
   let botChoice = null;
   for (const bw of botWolves) {
     const num = await AI.aiWolfChooseTarget(bw, game);
@@ -189,7 +222,6 @@ async function phaseWerewolf(game, channel, client) {
     return phaseSeer(game, channel, client);
   }
 
-  // 發送到狼人共用密室
   const wolfNames = wolves.map(p => `${p.displayName}(${p.number})`).join(', ');
   const targets = game.alivePlayers.filter(p => p.team !== TEAM.WEREWOLF);
   const menu = new StringSelectMenuBuilder()
@@ -216,7 +248,6 @@ export async function completeWolfKill(game, targetId, channel, client) {
   delete game._wolfBotChoice;
   game.wolfTarget = targetId;
   const target = game.getPlayer(targetId);
-  // 確認選擇
   await sendToThread(game, 'wolf_room', {
     embeds: [new EmbedBuilder().setColor(0x8B0000)
       .setTitle('✅ 目標已選定')
@@ -247,8 +278,7 @@ async function phaseSeer(game, channel, client) {
     .map(([id, team]) => {
       const p = game.getPlayer(id);
       return p ? `${p.displayName}：${team === TEAM.WEREWOLF ? '🔴 狼人' : '🟢 好人'}` : '';
-    })
-    .filter(Boolean).join('\n') || '（尚未查驗）';
+    }).filter(Boolean).join('\n') || '（尚未查驗）';
 
   const targets = game.alivePlayers.filter(p => p.id !== seer.id);
   const menu = new StringSelectMenuBuilder()
@@ -353,7 +383,6 @@ async function phaseWitch(game, channel, client) {
 
   game._witchSaveDone   = !canSave;
   game._witchPoisonDone = !canPoison;
-
   game._witchTimer = setTimeout(async () => {
     delete game._witchTimer;
     await resolveNight(game, channel, client);
@@ -385,7 +414,7 @@ async function checkWitchDone(game, channel, client) {
   }
 }
 
-// ── 夜晚結算 → 白天討論 ─────────────────────────────────
+// ── 夜晚結算 ────────────────────────────────────────────
 
 async function resolveNight(game, channel, client) {
   const deaths = game.resolveNight();
@@ -398,7 +427,6 @@ async function resolveNight(game, channel, client) {
     ? deaths.map(p => `💀 **${p.displayName}** (${ROLE_NAMES[p.role]})`).join('\n')
     : '昨晚是平安夜，沒有人死亡。';
 
-  // 天亮公告
   await channel.send({
     embeds: [new EmbedBuilder().setColor(0xFFD700)
       .setTitle(`${EMOJIS.SUN} 第 ${game.day} 天 — 天亮了`)
@@ -406,43 +434,125 @@ async function resolveNight(game, channel, client) {
       .addFields({ name: '存活玩家', value: game.formatPlayerList() })]
   });
 
-  // 獵人死亡立刻處理
   for (const dead of deaths) {
     if (dead.role === ROLES.HUNTER) return triggerHunterShot(game, channel, client, dead);
   }
 
-  // 白天討論：發布討論訊息，房主按按鈕結束討論開始投票
   await startDiscussion(game, channel, client);
 }
 
+// ── 白天輪流發言 ─────────────────────────────────────────
+
 async function startDiscussion(game, channel, client) {
   game.phase = GAME_PHASE.DAY;
+  game.discussionHistory = []; // 本輪發言紀錄
 
-  const msg = await channel.send({
+  // 建立發言順序：先存活真人，再存活AI，隨機打亂
+  const humanPlayers = game.alivePlayers.filter(p => !p.isBot);
+  const botPlayers   = game.alivePlayers.filter(p => p.isBot);
+  const speakOrder = [
+    ...humanPlayers.sort(() => Math.random() - 0.5),
+    ...botPlayers.sort(() => Math.random() - 0.5),
+  ];
+
+  game.speakOrder = speakOrder;
+  game.speakIndex = 0;
+
+  const orderText = speakOrder.map((p, i) => `${i + 1}. ${p.displayName}`).join('\n');
+
+  await channel.send({
     embeds: [new EmbedBuilder().setColor(0x5865F2)
-      .setTitle('💬 白天討論')
-      .setDescription('請大家自由討論，找出狼人！\n\n討論完畢後，按下方按鈕開始投票。')
-      .addFields({ name: '存活玩家', value: game.formatAlivePlayers() })],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`start_vote_${game.channelId}`)
-        .setLabel('🗳️ 結束討論，開始投票')
-        .setStyle(ButtonStyle.Primary)
-    )],
+      .setTitle('💬 白天討論開始')
+      .setDescription('每位玩家輪流發言，每人 **50 秒**，請說出你的看法！')
+      .addFields({ name: '發言順序', value: orderText })]
   });
 
-  // 5 分鐘後自動開始投票
-  game._discussionTimer = setTimeout(async () => {
-    delete game._discussionTimer;
-    try { await msg.edit({ components: [] }); } catch (_) {}
-    await startVote(game, channel, client);
-  }, 5 * 60_000);
+  await delay(2000);
+  await runNextSpeaker(game, channel, client);
 }
 
-export async function triggerVoteFromDiscussion(game, channel, client, interactionMsg) {
-  if (game._discussionTimer) { clearTimeout(game._discussionTimer); delete game._discussionTimer; }
-  try { await interactionMsg.edit({ components: [] }); } catch (_) {}
-  await startVote(game, channel, client);
+async function runNextSpeaker(game, channel, client) {
+  if (game.speakIndex >= game.speakOrder.length) {
+    // 所有人都發言完畢，解鎖頻道，進入投票
+    await unlockChannel(game, channel);
+    await channel.send({
+      embeds: [new EmbedBuilder().setColor(0x5865F2)
+        .setTitle('💬 討論結束')
+        .setDescription('所有人發言完畢！進入投票階段...')]
+    });
+    await delay(3000);
+    return startVote(game, channel, client);
+  }
+
+  const speaker = game.speakOrder[game.speakIndex];
+  const remaining = game.speakOrder.length - game.speakIndex;
+
+  if (speaker.isBot) {
+    // AI 玩家發言
+    await channel.send({
+      embeds: [new EmbedBuilder().setColor(0x5865F2)
+        .setTitle(`💬 輪到 ${speaker.displayName} 發言`)
+        .setDescription('AI 正在思考...')]
+    });
+
+    await delay(2000); // 模擬思考
+    const speech = await AI.aiDaySpeak(speaker, game, game.discussionHistory);
+    game.discussionHistory.push({ name: speaker.displayName, content: speech });
+
+    await channel.send(`🤖 **${speaker.displayName}**：${speech}`);
+    await delay(2000);
+
+    game.speakIndex++;
+    await runNextSpeaker(game, channel, client);
+
+  } else {
+    // 真人玩家發言：鎖定頻道，只有此玩家可以發言
+    await lockChannelForPlayer(game, channel, speaker.id);
+
+    const timerMsg = await channel.send({
+      embeds: [new EmbedBuilder().setColor(0x5865F2)
+        .setTitle(`💬 輪到 ${speaker.displayName} 發言`)
+        .setDescription(`<@${speaker.id}> 請在 **50 秒**內發言！\n剩餘 ${remaining} 人未發言。`)
+        .setFooter({ text: '發言後Bot會自動進入下一位，或50秒後自動跳過' })]
+    });
+
+    // 50 秒計時
+    game._speakTimer = setTimeout(async () => {
+      delete game._speakTimer;
+      game.discussionHistory.push({ name: speaker.displayName, content: '（跳過發言）' });
+      try { await timerMsg.edit({
+        embeds: [new EmbedBuilder().setColor(0x888888)
+          .setTitle(`⏭️ ${speaker.displayName} 發言時間結束，自動跳過`)]
+      }); } catch (_) {}
+      game.speakIndex++;
+      await runNextSpeaker(game, channel, client);
+    }, 50_000);
+
+    // 等待玩家發言（由 handlePlayerSpeak 觸發）
+    game._currentSpeaker = speaker;
+  }
+}
+
+// 由 index.js 呼叫：玩家在頻道發言時觸發
+export async function handlePlayerSpeak(game, message, channel, client) {
+  if (game.phase !== GAME_PHASE.DAY) return;
+  if (!game._currentSpeaker) return;
+  if (message.author.id !== game._currentSpeaker.id) return;
+
+  // 清除計時
+  if (game._speakTimer) { clearTimeout(game._speakTimer); delete game._speakTimer; }
+
+  // 記錄發言
+  game.discussionHistory.push({
+    name: game._currentSpeaker.displayName,
+    content: message.content,
+  });
+
+  delete game._currentSpeaker;
+  game.speakIndex++;
+
+  await delay(1500);
+  await runNextSpeaker(game, channel, client);
 }
 
 // ── 獵人 ────────────────────────────────────────────────
@@ -512,10 +622,13 @@ export async function startVote(game, channel, client) {
   game.phase = GAME_PHASE.VOTE;
   game.voteMap = new Map();
 
+  // 投票期間解鎖頻道讓所有人可以投票
+  await unlockChannel(game, channel);
+
   const msg = await channel.send({
     embeds: [new EmbedBuilder().setColor(0xFF6B35)
       .setTitle(`${EMOJIS.VOTE} 投票放逐`)
-      .setDescription('請在 **60 秒**內投票！所有人都投完後提前結算。')
+      .setDescription('請在 **60 秒**內投票！所有人投完提前結算。')
       .addFields({ name: '存活玩家', value: game.formatAlivePlayers() })],
     components: buildVoteComponents(game),
   });
@@ -529,7 +642,6 @@ export async function startVote(game, channel, client) {
         if (t) game.voteMap.set(bot.id, t.id);
       }
     }
-    // 如果全員（含AI）都投完，提前結算
     const aliveHumans = game.alivePlayers.filter(p => !p.isBot);
     if (aliveHumans.every(p => game.voteMap.has(p.id))) {
       clearTimeout(game._voteTimer);
@@ -587,6 +699,10 @@ async function resolveVote(game, channel, client, voteMsg) {
 
 async function endGame(game, channel, client) {
   game.phase = GAME_PHASE.ENDED;
+
+  // 解鎖頻道
+  await unlockChannel(game, channel);
+
   const wolfWin = game.winner === TEAM.WEREWOLF;
   const allPlayers = [...game.players.values()]
     .map(p => `${p.alive ? '✅' : '💀'} ${p.displayName} — ${ROLE_NAMES[p.role]}`).join('\n');
@@ -599,21 +715,16 @@ async function endGame(game, channel, client) {
       .addFields({ name: '最終結果', value: allPlayers })]
   });
 
-  // 各密室發送結果
-  for (const player of game.players.values()) {
-    if (!player.isBot) {
-      const win = player.team === game.winner;
-      const key = player.role === ROLES.WEREWOLF ? 'wolf_room' : player.id;
-      await sendToThread(game, key, {
-        embeds: [new EmbedBuilder()
-          .setColor(win ? 0x2E8B57 : 0x8B0000)
-          .setTitle(win ? '🎉 你贏了！' : '😢 你輸了...')
-          .setDescription(`你的角色：${ROLE_NAMES[player.role]}\n${win ? '你的陣營獲勝！' : '你的陣營敗北。'}`)]
-      });
-      break; // 狼人密室只發一次
-    }
-  }
-  // 非狼人各自發
+  // 通知狼人密室
+  const wolfWinMsg = wolfWin ? '🎉 你贏了！' : '😢 你輸了...';
+  await sendToThread(game, 'wolf_room', {
+    embeds: [new EmbedBuilder()
+      .setColor(wolfWin ? 0x2E8B57 : 0x8B0000)
+      .setTitle(wolfWin ? '🎉 你贏了！' : '😢 你輸了...')
+      .setDescription(`狼人陣營${wolfWin ? '獲勝！' : '敗北。'}`)]
+  });
+
+  // 通知其他玩家密室
   for (const player of game.players.values()) {
     if (!player.isBot && player.role !== ROLES.WEREWOLF) {
       const win = player.team === game.winner;
@@ -626,7 +737,6 @@ async function endGame(game, channel, client) {
     }
   }
 
-  // 10 秒後刪除所有密室
   setTimeout(async () => {
     await deleteAllThreads(game);
     destroyGame(game.channelId);

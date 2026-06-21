@@ -1,5 +1,5 @@
 // index.js
-import { Client, GatewayIntentBits, EmbedBuilder, Partials, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, EmbedBuilder, Partials, REST, Routes, SlashCommandBuilder, Events } from 'discord.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -27,7 +27,7 @@ import {
   startNight, startVote, registerVote,
   completeWolfKill, completeSeerCheck,
   completeWitchSave, completeWitchPoison,
-  completeHunterShot, triggerVoteFromDiscussion,
+  completeHunterShot, handlePlayerSpeak,
 } from './GameEngine.js';
 
 const client = new Client({
@@ -53,9 +53,34 @@ function extractChannelId(customId, prefix) {
   return customId.slice(prefix.length);
 }
 
-client.on('interactionCreate', async interaction => {
+// ── 監聽頻道訊息（輪流發言）──────────────────────────────
+client.on(Events.MessageCreate, async message => {
+  if (message.author.bot) return;
 
-  // ─── Slash Commands ───────────────────────────────────
+  const game = getGame(message.channelId);
+  if (!game) return;
+  if (game.phase !== GAME_PHASE.DAY) return;
+  if (!game._currentSpeaker) return;
+
+  // 非發言者發言 → 刪除並提醒
+  if (message.author.id !== game._currentSpeaker.id) {
+    try {
+      await message.delete();
+      const warn = await message.channel.send(
+        `<@${message.author.id}> 現在是 **${game._currentSpeaker.displayName}** 的發言時間，請等候！`
+      );
+      setTimeout(() => warn.delete().catch(() => {}), 4000);
+    } catch (_) {}
+    return;
+  }
+
+  // 是發言者 → 交給 GameEngine 處理
+  await handlePlayerSpeak(game, message, message.channel, client);
+});
+
+// ── Slash Commands ───────────────────────────────────────
+client.on(Events.InteractionCreate, async interaction => {
+
   if (interaction.isChatInputCommand()) {
     const { commandName, channelId } = interaction;
 
@@ -102,12 +127,11 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ─── Buttons ──────────────────────────────────────────
+  // ── Buttons ──────────────────────────────────────────
   if (interaction.isButton()) {
     const { customId, channelId, user } = interaction;
     const game = getGame(channelId);
 
-    // ── 大廳按鈕 ──
     if (customId === 'join_game') {
       if (!game || game.phase !== GAME_PHASE.WAITING)
         return interaction.reply({ content: '遊戲不在等待階段。', ephemeral: true });
@@ -147,29 +171,26 @@ client.on('interactionCreate', async interaction => {
       const ch = interaction.channel;
       game.channel = ch;
 
-      // 建立討論串
       await setupThreads(game, ch, client);
 
-      // 通知每位真人玩家的角色（在各自的密室）
+      // 通知每位真人玩家角色
       for (const player of game.players.values()) {
         if (!player.isBot) {
           const isWolf = player.role === ROLES.WEREWOLF;
           const threadKey = isWolf ? 'wolf_room' : player.id;
           const thread = game.threads?.get(threadKey);
           if (!thread) continue;
-
           const wolfAllies = game.aliveWolves.filter(p => p.id !== player.id && !p.isBot);
           let extra = '';
           if (isWolf && wolfAllies.length > 0)
             extra = `\n\n🐺 你的狼人同伴：${wolfAllies.map(p => p.displayName).join(', ')}`;
-
           try {
             await thread.send({
               content: `<@${player.id}>`,
               embeds: [new EmbedBuilder()
                 .setColor(player.team === TEAM.WEREWOLF ? 0x8B0000 : 0x2E8B57)
                 .setTitle('🎭 你的角色')
-                .setDescription(`**${ROLE_NAMES[player.role]}**\n\n${ROLE_DESCRIPTIONS[player.role]}${extra}${isWolf ? '' : '\n\n⚠️ 夜晚行動指示會在此發送，請留意！'}`)]
+                .setDescription(`**${ROLE_NAMES[player.role]}**\n\n${ROLE_DESCRIPTIONS[player.role]}${extra}${isWolf ? '' : '\n\n⚠️ 夜晚行動指示會在此密室發送，請留意！'}`)]
             });
           } catch (e) { console.error(`角色通知失敗 ${player.username}:`, e.message); }
         }
@@ -189,18 +210,7 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    // ── 結束討論，開始投票（從頻道按鈕觸發）──
-    if (customId.startsWith('start_vote_')) {
-      const gameChannelId = extractChannelId(customId, 'start_vote_');
-      const targetGame = getGame(gameChannelId);
-      if (!targetGame || targetGame.phase !== GAME_PHASE.DAY)
-        return interaction.reply({ content: '現在不是討論階段。', ephemeral: true });
-      await interaction.update({ components: [] });
-      await triggerVoteFromDiscussion(targetGame, targetGame.channel, client, interaction.message);
-      return;
-    }
-
-    // ── 投票按鈕 ──
+    // 投票按鈕
     if (customId.startsWith('vote_')) {
       const targetId = customId.slice(5);
       if (!game || game.phase !== GAME_PHASE.VOTE)
@@ -214,7 +224,7 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: `✅ 已投票放逐 **${game.getPlayer(targetId)?.displayName || '?'}**`, ephemeral: true });
     }
 
-    // ── 女巫解藥（在討論串裡）──
+    // 女巫解藥（密室按鈕）
     if (customId.startsWith('witch_save_yes_') || customId.startsWith('witch_save_no_')) {
       const save = customId.startsWith('witch_save_yes_');
       const gameChannelId = save
@@ -233,12 +243,11 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ─── Select Menus ─────────────────────────────────────
+  // ── Select Menus ─────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
     const { customId, channelId, user, values } = interaction;
     const selectedId = values[0];
 
-    // 狼人擊殺（在狼人密室）
     if (customId.startsWith('wolf_kill_')) {
       const gameChannelId = extractChannelId(customId, 'wolf_kill_');
       const targetGame = getGame(gameChannelId);
@@ -257,7 +266,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // 預言家查驗（在密室）
     if (customId.startsWith('seer_check_')) {
       const gameChannelId = extractChannelId(customId, 'seer_check_');
       const targetGame = getGame(gameChannelId);
@@ -272,7 +280,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // 女巫毒藥（在密室）
     if (customId.startsWith('witch_poison_')) {
       const gameChannelId = extractChannelId(customId, 'witch_poison_');
       const targetGame = getGame(gameChannelId);
@@ -285,7 +292,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // 獵人開槍（在密室）
     if (customId.startsWith('hunter_shoot_')) {
       const gameChannelId = extractChannelId(customId, 'hunter_shoot_');
       const targetGame = getGame(gameChannelId);
@@ -300,7 +306,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // 投票選單
     if (customId === 'vote_select') {
       const game = getGame(channelId);
       if (!game || game.phase !== GAME_PHASE.VOTE)
