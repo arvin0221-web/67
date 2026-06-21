@@ -330,7 +330,7 @@ async function resolveNight(game, channel, client) {
     if (dead.role === ROLES.HUNTER) return triggerHunterShot(game, channel, client, dead);
   }
 
-  await delay(30_000);
+  await delay(10_000); // 10秒討論時間（可調整）
   await startVote(game, channel, client);
 }
 

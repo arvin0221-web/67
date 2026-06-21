@@ -147,7 +147,8 @@ export class GameState {
     }
 
     if (this.mode.winCondition === 'kill_all_specials') {
-      if (wolves >= villagers || specials === 0) {
+      // 屠城局：狼人數量 >= 好人數量即勝（好人被殺到剩下跟狼人一樣多就輸）
+      if (wolves >= villagers) {
         this.winner = TEAM.WEREWOLF;
         return true;
       }

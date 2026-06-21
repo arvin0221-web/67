@@ -174,10 +174,9 @@ client.on('interactionCreate', async interaction => {
         }
       }
 
-      setTimeout(async () => {
-        const ch = await client.channels.fetch(channelId);
-        await startNight(game, ch, client);
-      }, 5000);
+      // 直接啟動夜晚（不用 setTimeout 避免 Railway 環境問題）
+      const ch = await client.channels.fetch(channelId);
+      startNight(game, ch, client).catch(e => console.error('startNight 錯誤:', e));
       return;
     }
 
