@@ -1,7 +1,29 @@
 // index.js
-import { Client, GatewayIntentBits, EmbedBuilder, Partials } from 'discord.js';
+import { Client, GatewayIntentBits, EmbedBuilder, Partials, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import dotenv from 'dotenv';
 dotenv.config();
+
+// 自動註冊 Slash Commands（每次啟動執行，已存在的指令會自動更新）
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('werewolf').setDescription('開始一場狼人殺遊戲')
+      .addIntegerOption(o => o.setName('mode').setDescription('選擇遊戲模式').setRequired(true)
+        .addChoices({ name: '6人模式（屠城局）', value: 6 }, { name: '9人模式（屠邊局）', value: 9 })),
+    new SlashCommandBuilder().setName('roles').setDescription('查看所有角色說明'),
+    new SlashCommandBuilder().setName('status').setDescription('查看當前遊戲狀態'),
+  ];
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), {
+      body: commands.map(c => c.toJSON()),
+    });
+    console.log('✅ Slash Commands 註冊完成');
+  } catch (e) {
+    console.error('❌ Slash Commands 註冊失敗:', e.message);
+  }
+}
+
 
 import { ROLES, ROLE_NAMES, ROLE_DESCRIPTIONS, TEAM, GAME_PHASE } from './constants.js';
 import {
@@ -26,9 +48,10 @@ const client = new Client({
 let botIdCounter = 1;
 const BOT_NAMES = ['艾里克斯', '波菲洛', '卡蒙', '黛安', '伊莎', '法蘭克', '葛蕾絲', '海克', '艾維'];
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`✅ 狼人殺Bot已上線：${client.user.tag}`);
   client.user.setActivity('狼人殺 🐺', { type: 0 });
+  await registerCommands(); // 自動註冊指令，不需要手動跑 register-commands.js
 });
 
 // ── 解析 customId 中的 channelId（最後一段，避免含底線的ID出問題）──
