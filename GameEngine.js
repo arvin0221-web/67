@@ -495,12 +495,12 @@ async function runNextSpeaker(game, channel, client) {
         .setDescription('AI 正在思考...')]
     });
 
-    await delay(2000); // 模擬思考
+    await delay(3000); // 模擬思考，同時避免 API 限流
     const speech = await AI.aiDaySpeak(speaker, game, game.discussionHistory);
     game.discussionHistory.push({ name: speaker.displayName, content: speech });
 
     await channel.send(`🤖 **${speaker.displayName}**：${speech}`);
-    await delay(2000);
+    await delay(4000); // AI 發言後等待，避免連續呼叫超過限流
 
     game.speakIndex++;
     await runNextSpeaker(game, channel, client);

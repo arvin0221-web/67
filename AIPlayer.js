@@ -15,19 +15,29 @@ function randomChoice(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-async function askGemini(prompt) {
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function askGemini(prompt, retries = 2) {
   const client = getAI();
   if (!client) return null;
-  try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: prompt,
-    });
-    return response.text?.trim() ?? null;
-  } catch (e) {
-    console.warn('[AI] Gemini 呼叫失敗:', e.message);
-    return null;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await client.models.generateContent({
+        model: 'gemini-1.5-flash',
+        contents: prompt,
+      });
+      return response.text?.trim() ?? null;
+    } catch (e) {
+      if (e.message?.includes('429') && i < retries) {
+        console.warn(`[AI] 限流，等待 ${(i + 1) * 5} 秒後重試...`);
+        await sleep((i + 1) * 5000);
+      } else {
+        console.warn('[AI] Gemini 呼叫失敗:', e.message?.slice(0, 100));
+        return null;
+      }
+    }
   }
+  return null;
 }
 
 async function askAI(prompt, options) {
