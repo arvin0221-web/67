@@ -49,6 +49,11 @@ client.once('ready', async () => {
   await registerCommands();
 });
 
+// 全域錯誤處理：防止 Unknown interaction 等錯誤讓 Bot 崩潰
+client.on('error', err => console.error('[Discord錯誤]', err.message));
+process.on('unhandledRejection', err => console.error('[未處理的Promise錯誤]', err?.message ?? err));
+process.on('uncaughtException', err => console.error('[未捕獲的例外]', err?.message ?? err));
+
 function extractChannelId(customId, prefix) {
   return customId.slice(prefix.length);
 }
@@ -80,6 +85,7 @@ client.on(Events.MessageCreate, async message => {
 
 // ── Slash Commands ───────────────────────────────────────
 client.on(Events.InteractionCreate, async interaction => {
+  try {
 
   if (interaction.isChatInputCommand()) {
     const { commandName, channelId } = interaction;
@@ -320,6 +326,10 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     return;
+  }
+  } catch (err) {
+    // interaction 超時或其他錯誤，靜默忽略，防止 Bot 崩潰
+    if (err?.code !== 10062) console.error('[Interaction錯誤]', err?.message ?? err);
   }
 });
 
