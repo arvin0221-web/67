@@ -1,0 +1,17 @@
+{
+  "name": "werewolf-discord-bot",
+  "version": "1.0.0",
+  "description": "狼人殺 Discord Bot - 6人/9人模式",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "register": "node register-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "openai": "^4.28.0",
+    "dotenv": "^16.4.1"
+  }
+}

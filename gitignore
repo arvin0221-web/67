@@ -1,0 +1,3 @@
+# 絕對不要推上 GitHub 的檔案
+.env
+node_modules/
