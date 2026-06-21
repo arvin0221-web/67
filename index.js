@@ -42,6 +42,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -174,8 +175,8 @@ client.on('interactionCreate', async interaction => {
         }
       }
 
-      // 直接啟動夜晚（不用 setTimeout 避免 Railway 環境問題）
-      const ch = await client.channels.fetch(channelId);
+      // 直接用 interaction.channel，不用 fetch（避免權限問題）
+      const ch = interaction.channel;
       startNight(game, ch, client).catch(e => console.error('startNight 錯誤:', e));
       return;
     }
