@@ -12,6 +12,7 @@ async function registerCommands() {
         .addChoices({ name: '6人模式（屠城局）', value: 6 }, { name: '9人模式（屠邊局）', value: 9 })),
     new SlashCommandBuilder().setName('roles').setDescription('查看所有角色說明'),
     new SlashCommandBuilder().setName('status').setDescription('查看當前遊戲狀態'),
+    new SlashCommandBuilder().setName('endgame').setDescription('強制結束當前遊戲（房主或管理員使用）'),
   ];
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -80,6 +81,15 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('📖 狼人殺角色說明').addFields(fields)],
         ephemeral: true,
+      });
+    }
+
+    if (commandName === 'endgame') {
+      if (!hasGame(channelId))
+        return interaction.reply({ content: '目前沒有進行中的遊戲。', ephemeral: true });
+      destroyGame(channelId);
+      return interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0x8B0000).setTitle('🛑 遊戲已強制結束').setDescription('可以用 `/werewolf` 開新遊戲了。')],
       });
     }
 
