@@ -147,13 +147,13 @@ export class GameState {
     }
 
     if (this.mode.winCondition === 'kill_all_specials') {
-      // 屠城局：狼人數量 >= 好人總數即勝
-      if (wolves >= villagers) {
+      // 屠城局：所有好人（4人）全部死亡，狼人才贏
+      if (villagers === 0) {
         this.winner = TEAM.WEREWOLF;
         return true;
       }
     } else {
-      // 屠邊局：平民全死 OR 神職全死，狼人勝
+      // 屠邊局：神職全死（3人） OR 平民全死（3人），狼人贏
       const plainVillagers = this.alivePlayers.filter(p => p.role === ROLES.VILLAGER).length;
       if (plainVillagers === 0 || specials === 0) {
         this.winner = TEAM.WEREWOLF;
