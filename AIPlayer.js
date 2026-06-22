@@ -86,10 +86,13 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 }
 
 export async function aiWolfChooseTarget(bot, game) {
-  const targets = game.alivePlayers.filter(p => p.id !== bot.id && p.team !== TEAM.WEREWOLF);
+  // 可以殺任何人（包含狼人同伴），排除自己
+  const targets = game.alivePlayers.filter(p => p.id !== bot.id);
   if (!targets.length) return null;
+  const goodTargets = targets.filter(p => p.team !== TEAM.WEREWOLF);
+  const preferredNums = goodTargets.length ? goodTargets.map(p => p.number) : targets.map(p => p.number);
   return askAI(
-    `你是狼人殺的狼人。存活好人：${targets.map(p => `${p.number}.${p.displayName}`).join(', ')}。優先殺神職（預言家、女巫、獵人），選一個編號：`,
+    `你是狼人殺的狼人。存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '狼人同伴' : '好人'})`).join(', ')}。優先殺神職（預言家、女巫、獵人），也可以殺狼人同伴作為掩護，選一個編號：`,
     targets.map(p => p.number)
   );
 }
@@ -121,22 +124,24 @@ export async function aiWitchDecidePoison(bot, game) {
 export async function aiVote(bot, game) {
   const targets = game.alivePlayers.filter(p => p.id !== bot.id);
   if (!targets.length) return null;
+  const nums = targets.map(p => p.number);
+
+  const history = (game.discussionHistory || [])
+    .map(h => `${h.name}：${h.content}`).join('\n') || '（無討論記錄）';
 
   if (bot.role === ROLES.WEREWOLF) {
-    // 保護所有狼人陣營（不分真人或AI），只投好人
     const goodTargets = targets.filter(p => p.team !== TEAM.WEREWOLF);
-    if (goodTargets.length) {
-      return askAI(
-        `你是狼人。存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '你的同伴' : '好人'})`).join(', ')}。投票給好人陣營，不能投狼人同伴，選一個編號：`,
-        goodTargets.map(p => p.number)
-      );
-    }
-    return randomChoice(targets.map(p => p.number));
+    if (!goodTargets.length) return randomChoice(nums);
+    return askAI(
+      `你是狼人殺的狼人，你的名字是「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '你的狼人同伴' : '好人'})`).join(', ')}。\n白天討論記錄：\n${history}\n根據討論記錄，選一個好人陣營的玩家投票放逐，不能投狼人同伴，讓選擇看起來合理，選一個編號：`,
+      goodTargets.map(p => p.number)
+    );
   }
 
+  const roleLabel = bot.role === ROLES.SEER ? '預言家' : bot.role === ROLES.WITCH ? '女巫' : bot.role === ROLES.HUNTER ? '獵人' : '平民';
   return askAI(
-    `你是狼人殺好人陣營。存活玩家：${targets.map(p => `${p.number}.${p.displayName}`).join(', ')}。根據邏輯判斷誰最可能是狼人，選一個編號：`,
-    targets.map(p => p.number)
+    `你是狼人殺的${roleLabel}，你的名字是「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}`).join(', ')}。\n白天討論記錄：\n${history}\n根據討論記錄分析每個人的行為邏輯，判斷誰最可能是狼人，投票放逐他，選一個編號：`,
+    nums
   );
 }
 
