@@ -23,7 +23,7 @@ async function askGemini(prompt, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await client.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
       });
       return response.text?.trim() ?? null;
