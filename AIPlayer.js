@@ -1,47 +1,39 @@
 // AIPlayer.js
-import { GoogleGenAI } from '@google/genai';
+import Groq from 'groq-sdk';
 import { ROLES, TEAM } from './constants.js';
 
-let ai = null;
+let groqClient = null;
 
-function getAI() {
-  if (!ai && process.env.GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+function getClient() {
+  if (!groqClient && process.env.GROQ_API_KEY) {
+    groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
   }
-  return ai;
+  return groqClient;
 }
 
 function randomChoice(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function askGemini(prompt, retries = 2) {
-  const client = getAI();
+async function askGroq(prompt, maxTokens = 20) {
+  const client = getClient();
   if (!client) return null;
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const response = await client.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-      return response.text?.trim() ?? null;
-    } catch (e) {
-      if (e.message?.includes('429') && i < retries) {
-        console.warn(`[AI] 限流，等待 ${(i + 1) * 5} 秒後重試...`);
-        await sleep((i + 1) * 5000);
-      } else {
-        console.warn('[AI] Gemini 呼叫失敗:', e.message?.slice(0, 100));
-        return null;
-      }
-    }
+  try {
+    const res = await client.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: maxTokens,
+      temperature: 0.8,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    return res.choices[0]?.message?.content?.trim() ?? null;
+  } catch (e) {
+    console.warn('[AI] Groq 呼叫失敗:', e.message?.slice(0, 100));
+    return null;
   }
-  return null;
 }
 
 async function askAI(prompt, options) {
-  const text = await askGemini(`${prompt}\n只回覆一個數字（玩家編號），不加任何說明或標點符號。`);
+  const text = await askGroq(`${prompt}\n只回覆一個數字（玩家編號），不加任何說明或標點符號。`, 5);
   if (text) {
     const num = parseInt(text);
     if (options.includes(num)) return num;
@@ -75,10 +67,9 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 根據發言邏輯分析誰最可疑，不論對方是真人或AI都要一視同仁。
 用繁體中文發言，50字以內，不要說你是AI。`;
 
-  const text = await askGemini(prompt);
-  if (text) return text.slice(0, 100);
+  const text = await askGroq(prompt, 100);
+  if (text) return text.slice(0, 120);
 
-  // Fallback
   const fallbacks = isWolf
     ? ['我覺得要冷靜分析。', '有些人的發言很奇怪。', '我沒有特別的線索。']
     : ['我覺得要仔細看大家反應。', '有人說話很可疑。', '大家一起分析吧。'];
@@ -86,11 +77,8 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 }
 
 export async function aiWolfChooseTarget(bot, game) {
-  // 可以殺任何人（包含狼人同伴），排除自己
   const targets = game.alivePlayers.filter(p => p.id !== bot.id);
   if (!targets.length) return null;
-  const goodTargets = targets.filter(p => p.team !== TEAM.WEREWOLF);
-  const preferredNums = goodTargets.length ? goodTargets.map(p => p.number) : targets.map(p => p.number);
   return askAI(
     `你是狼人殺的狼人。存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '狼人同伴' : '好人'})`).join(', ')}。優先殺神職（預言家、女巫、獵人），也可以殺狼人同伴作為掩護，選一個編號：`,
     targets.map(p => p.number)
@@ -125,7 +113,6 @@ export async function aiVote(bot, game) {
   const targets = game.alivePlayers.filter(p => p.id !== bot.id);
   if (!targets.length) return null;
   const nums = targets.map(p => p.number);
-
   const history = (game.discussionHistory || [])
     .map(h => `${h.name}：${h.content}`).join('\n') || '（無討論記錄）';
 
@@ -133,14 +120,14 @@ export async function aiVote(bot, game) {
     const goodTargets = targets.filter(p => p.team !== TEAM.WEREWOLF);
     if (!goodTargets.length) return randomChoice(nums);
     return askAI(
-      `你是狼人殺的狼人，你的名字是「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '你的狼人同伴' : '好人'})`).join(', ')}。\n白天討論記錄：\n${history}\n根據討論記錄，選一個好人陣營的玩家投票放逐，不能投狼人同伴，讓選擇看起來合理，選一個編號：`,
+      `你是狼人殺的狼人「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}(${p.team === TEAM.WEREWOLF ? '狼人同伴' : '好人'})`).join(', ')}。\n討論記錄：\n${history}\n根據討論，選一個好人陣營的玩家投票放逐，不能投狼人同伴，選一個編號：`,
       goodTargets.map(p => p.number)
     );
   }
 
-  const roleLabel = bot.role === ROLES.SEER ? '預言家' : bot.role === ROLES.WITCH ? '女巫' : bot.role === ROLES.HUNTER ? '獵人' : '平民';
+  const roleLabel = { [ROLES.SEER]: '預言家', [ROLES.WITCH]: '女巫', [ROLES.HUNTER]: '獵人', [ROLES.VILLAGER]: '平民' }[bot.role] || '平民';
   return askAI(
-    `你是狼人殺的${roleLabel}，你的名字是「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}`).join(', ')}。\n白天討論記錄：\n${history}\n根據討論記錄分析每個人的行為邏輯，判斷誰最可能是狼人，投票放逐他，選一個編號：`,
+    `你是狼人殺的${roleLabel}「${bot.displayName}」。\n存活玩家：${targets.map(p => `${p.number}.${p.displayName}`).join(', ')}。\n討論記錄：\n${history}\n根據討論分析誰最可能是狼人，投票放逐他，選一個編號：`,
     nums
   );
 }
