@@ -22,6 +22,17 @@ export function createGame(channelId, mode) {
 }
 
 export function destroyGame(channelId) {
+  // 清除所有計時器，防止遊戲結束後繼續執行
+  const game = games.get(channelId);
+  if (game) {
+    const timers = ['_wolfTimer', '_seerTimer', '_witchTimer', '_witchTimer',
+      '_voteTimer', '_hunterTimer', '_discussionTimer', '_speakTimer'];
+    for (const t of timers) {
+      if (game[t]) { clearTimeout(game[t]); delete game[t]; }
+    }
+    // 清除當前發言者，防止訊息繼續被處理
+    delete game._currentSpeaker;
+  }
   games.delete(channelId);
   seerMemory.delete(channelId);
 }
@@ -190,6 +201,8 @@ export async function startNight(game, channel, client) {
   game.day += 1;
   game.wolfTarget = null;
   game.witchPoisonTarget = null;
+  // 初始化討論記錄（每天重新開始）
+  game.discussionHistory = [];
 
   // 夜晚鎖定頻道（所有玩家都不能發言）
   await lockChannelForPlayer(game, channel, null);
@@ -391,8 +404,17 @@ async function phaseWitch(game, channel, client) {
 
 export async function completeWitchSave(game, witchId, save, client, channel) {
   const victim = game.wolfTarget ? game.getPlayer(game.wolfTarget) : null;
-  game.witchSaveUsed = true;
-  if (save && victim) { victim.protected = true; game.wolfTarget = null; }
+  if (save && victim) {
+    // 選擇救人：消耗解藥，保護目標
+    game.witchSaveUsed = true;
+    victim.protected = true;
+    game.wolfTarget = null;
+    // 記錄解藥目標（讓女巫AI知道自己救了誰，可以報銀水）
+    game.witchSavedTarget = victim.id;
+  } else {
+    // 選擇不救：解藥也消耗（女巫放棄使用）
+    game.witchSaveUsed = true;
+  }
   game._witchSaveDone = true;
   await checkWitchDone(game, channel, client);
 }
@@ -423,9 +445,15 @@ async function resolveNight(game, channel, client) {
   game.phase = GAME_PHASE.DAY;
   await delay(1000);
 
+  // 記錄死亡資訊到 game（讓 AI 能看到死者身份）
+  if (!game.deathLog) game.deathLog = [];
+  for (const dead of deaths) {
+    game.deathLog.push({ name: dead.displayName, role: ROLE_NAMES[dead.role], day: game.day });
+  }
+
   const deathMsg = deaths.length > 0
-    ? deaths.map(p => `💀 **${p.displayName}** (${ROLE_NAMES[p.role]})`).join('\n')
-    : '昨晚是平安夜，沒有人死亡。';
+    ? deaths.map(p => `💀 **${p.displayName}** 死亡，身份公開：**${ROLE_NAMES[p.role]}**`).join('\n')
+    : '昨晚是**平安夜**，沒有人死亡。';
 
   await channel.send({
     embeds: [new EmbedBuilder().setColor(0xFFD700)
