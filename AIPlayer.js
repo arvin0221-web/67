@@ -64,7 +64,9 @@ async function callGroq(systemPrompt, userPrompt, maxTokens = 300) {
         { role: 'user', content: userPrompt },
       ],
     });
-    return res.choices[0]?.message?.content?.trim() ?? null;
+    const text = res.choices[0]?.message?.content?.trim() ?? null;
+    console.log('[AI] Groq 回應:', text?.slice(0, 80) ?? 'NULL');
+    return text;
   } catch (e) {
     console.warn('[AI] Groq 呼叫失敗:', e.message?.slice(0, 120));
     return null;
