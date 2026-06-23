@@ -52,6 +52,7 @@ function buildContext(bot, game) {
 // 核心 Groq 呼叫
 async function callGroq(systemPrompt, userPrompt, maxTokens = 300) {
   const client = getClient();
+  console.log('[AI] callGroq called, client:', client ? 'OK' : 'NULL', '| KEY:', process.env.GROQ_API_KEY ? 'SET' : 'NOT SET');
   if (!client) return null;
   try {
     const res = await client.chat.completions.create({
