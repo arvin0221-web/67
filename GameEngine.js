@@ -22,19 +22,24 @@ export function createGame(channelId, mode) {
 }
 
 export function destroyGame(channelId) {
-  // 清除所有計時器，防止遊戲結束後繼續執行
   const game = games.get(channelId);
   if (game) {
-    const timers = ['_wolfTimer', '_seerTimer', '_witchTimer', '_witchTimer',
+    // 標記遊戲已結束，讓所有進行中的流程自動停止
+    game._destroyed = true;
+    const timers = ['_wolfTimer', '_seerTimer', '_witchTimer',
       '_voteTimer', '_hunterTimer', '_discussionTimer', '_speakTimer'];
     for (const t of timers) {
       if (game[t]) { clearTimeout(game[t]); delete game[t]; }
     }
-    // 清除當前發言者，防止訊息繼續被處理
     delete game._currentSpeaker;
   }
   games.delete(channelId);
   seerMemory.delete(channelId);
+}
+
+// 檢查遊戲是否還存在（用於流程中途檢查）
+function gameAlive(game) {
+  return game && !game._destroyed && games.has(game.channelId);
 }
 
 // ── 討論串管理 ──────────────────────────────────────────
@@ -214,12 +219,14 @@ export async function startNight(game, channel, client) {
       .addFields({ name: '存活玩家', value: game.formatPlayerList() })]
   });
   await delay(1500);
+  if (!gameAlive(game)) return;
   await phaseWerewolf(game, channel, client);
 }
 
 // ── 狼人階段 ────────────────────────────────────────────
 
 async function phaseWerewolf(game, channel, client) {
+  if (!gameAlive(game)) return;
   const wolves = game.aliveWolves;
   const realWolves = wolves.filter(p => !p.isBot);
   const botWolves  = wolves.filter(p => p.isBot);
@@ -272,6 +279,7 @@ export async function completeWolfKill(game, targetId, channel, client) {
 // ── 預言家階段 ──────────────────────────────────────────
 
 async function phaseSeer(game, channel, client) {
+  if (!gameAlive(game)) return;
   const seer = game.alivePlayers.find(p => p.role === ROLES.SEER);
   if (!seer) return phaseWitch(game, channel, client);
 
@@ -332,6 +340,7 @@ export async function completeSeerCheck(game, seerId, targetId, client, channel)
 // ── 女巫階段 ────────────────────────────────────────────
 
 async function phaseWitch(game, channel, client) {
+  if (!gameAlive(game)) return;
   const witch = game.alivePlayers.find(p => p.role === ROLES.WITCH);
   if (!witch) return resolveNight(game, channel, client);
 
@@ -439,6 +448,7 @@ async function checkWitchDone(game, channel, client) {
 // ── 夜晚結算 ────────────────────────────────────────────
 
 async function resolveNight(game, channel, client) {
+  if (!gameAlive(game)) return;
   const deaths = game.resolveNight();
   if (game.checkWinCondition()) return endGame(game, channel, client);
 
@@ -472,6 +482,7 @@ async function resolveNight(game, channel, client) {
 // ── 白天輪流發言 ─────────────────────────────────────────
 
 async function startDiscussion(game, channel, client) {
+  if (!gameAlive(game)) return;
   game.phase = GAME_PHASE.DAY;
   game.discussionHistory = []; // 本輪發言紀錄
 
@@ -500,6 +511,7 @@ async function startDiscussion(game, channel, client) {
 }
 
 async function runNextSpeaker(game, channel, client) {
+  if (!gameAlive(game)) return;
   if (game.speakIndex >= game.speakOrder.length) {
     // 所有人都發言完畢，解鎖頻道，進入投票
     await unlockChannel(game, channel);
@@ -647,6 +659,7 @@ export async function completeHunterShot(game, targetId, channel, client) {
 // ── 投票 ────────────────────────────────────────────────
 
 export async function startVote(game, channel, client) {
+  if (!gameAlive(game)) return;
   game.phase = GAME_PHASE.VOTE;
   game.voteMap = new Map();
 
@@ -694,6 +707,7 @@ export async function registerVote(game, voterId, targetId, channel, client) {
 }
 
 async function resolveVote(game, channel, client, voteMsg) {
+  if (!gameAlive(game)) return;
   if (game.phase !== GAME_PHASE.VOTE) return;
   game.phase = GAME_PHASE.DAY;
   if (voteMsg) { try { await voteMsg.edit({ components: [] }); } catch (_) {} }
