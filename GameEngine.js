@@ -461,6 +461,12 @@ async function resolveNight(game, channel, client) {
     game.deathLog.push({ name: dead.displayName, role: ROLE_NAMES[dead.role], day: game.day });
   }
 
+  // 記錄平安夜（讓狼人AI知道女巫解藥用了）
+  if (deaths.length === 0) {
+    if (!game.peacefulNights) game.peacefulNights = [];
+    game.peacefulNights.push(game.day);
+  }
+
   const deathMsg = deaths.length > 0
     ? deaths.map(p => `💀 **${p.displayName}** 死亡，身份公開：**${ROLE_NAMES[p.role]}**`).join('\n')
     : '昨晚是**平安夜**，沒有人死亡。';

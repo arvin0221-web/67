@@ -82,15 +82,23 @@ function parseJSON(text) {
   return null;
 }
 
-// 從回應中取出 <speech> 標籤內容，找不到就清除 <thinking> 後直接返回
+// 從回應中取出公開發言，移除所有思考標籤
 function extractSpeech(text) {
   if (!text) return null;
-  // 優先找 <speech> 標籤
-  const speechMatch = text.match(/<speech>([\s\S]*?)<\/speech>/i);
-  if (speechMatch) return speechMatch[1].trim();
-  // 移除 <thinking>...</thinking> 區塊後返回剩餘文字
-  const withoutThinking = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
-  if (withoutThinking) return withoutThinking.slice(0, 150);
+
+  // 1. 找 <speech>...</speech>
+  const speechTag = text.match(/<speech>([\s\S]*?)<\/speech>/i);
+  if (speechTag) return speechTag[1].trim().replace(/^["「『]|["」』]$/g, '').trim();
+
+  // 2. 移除 <thinking>...</thinking>，取剩餘文字
+  let cleaned = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+
+  // 3. 移除殘留的標籤文字（如 "<speech> 公開發言："）
+  cleaned = cleaned.replace(/<\/?(?:thinking|speech)>/gi, '').trim();
+  cleaned = cleaned.replace(/^(?:公開發言|speech|thinking)\s*[:：]?\s*/i, '').trim();
+  cleaned = cleaned.replace(/^["「『]|["」』]$/g, '').trim();
+
+  if (cleaned.length > 5) return cleaned.slice(0, 150);
   return null;
 }
 
@@ -113,10 +121,14 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 - 「倒鉤」：附和好人的分析，但把矛頭引向其他好人
 - 「帶節奏」：引導全場懷疑某個威脅最大的好人
 
-請先用 <thinking> 標籤私下思考策略，再用 <speech> 標籤輸出公開發言。
+請先用 <thinking> 標籤私下思考策略（可以用列點分析），再用 <speech> 標籤輸出公開發言。
 <thinking> 內容不會被其他玩家看到，可以暴露真實想法。
-<speech> 內容會被所有人看到，必須完全像好人。
-發言限50字，使用繁體中文，像真人玩家，可用狼人殺術語（金水、銀水、查殺、對跳、悍跳）。`
+<speech> 內容會被所有人看到，必須完全像好人說話。
+<speech> 格式要求：
+- 用自然口語說話，不能有列點或條列格式
+- 像真人在聊天一樣，可以說3句以內
+- 80字以內，繁體中文
+- 可以用術語：金水、銀水、查殺、對跳、悍跳`
     : ctx.myRole === '預言家'
     ? `你是一個狼人殺遊戲的AI玩家，你的身份是【預言家】。
 你每晚可以查驗一名玩家的陣營。
@@ -124,7 +136,7 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 - 選擇適當時機報出查驗結果
 - 若有狼人跳預言家，你要強勢「對跳」並提供更可信的查驗鏈
 - 給查驗過的好人「金水」，標記查殺的狼人
-請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文。`
+請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文口語，不能列點。`
     : ctx.myRole === '女巫'
     ? `你是一個狼人殺遊戲的AI玩家，你的身份是【女巫】。
 你有一瓶解藥（銀水）和一瓶毒藥，各只能用一次。
@@ -133,21 +145,21 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
 - 謹慎決定要不要公開自己是女巫（公開有風險但能保護銀水目標）
 - 若你已知道某人是狼人，可暗示或直接說出
 - 分析誰是狼人，在投票時引導方向
-請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文。`
+請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文口語，不能列點。`
     : ctx.myRole === '獵人'
     ? `你是一個狼人殺遊戲的AI玩家，你的身份是【獵人】。
 你死亡時可以帶走一名玩家。
 策略：
 - 觀察並記住最可疑的狼人，死後帶走
 - 可以威脅：「如果我死，我會帶走我認為的狼人」
-請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文。`
+請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文口語，不能列點。`
     : `你是一個狼人殺遊戲的AI玩家，你的身份是【平民】。
 你沒有特殊技能，只能靠觀察和分析找出狼人。
 策略：
 - 仔細分析每個人的發言邏輯和矛盾點
 - 不要盲目跟風，用理性判斷
 - 注意誰在帶節奏、誰的發言前後矛盾
-請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文。`;
+請先 <thinking> 分析，再 <speech> 發言。50字內，繁體中文口語，不能列點。`;
 
   // 女巫額外資訊：藥品狀態和銀水目標
   let witchExtra = '';
@@ -160,11 +172,17 @@ export async function aiDaySpeak(bot, game, discussionHistory) {
     witchExtra = `\n【女巫藥品狀態】解藥：${saveStatus}｜毒藥：${poisonStatus}${savedTarget ? '\n' + savedTarget : ''}`;
   }
 
+  // 平安夜記錄（讓狼人知道解藥用了幾次）
+  const peacefulNights = game.peacefulNights || [];
+  const peacefulNote = ctx.isWolf && game.witchSaveUsed
+    ? `\n【重要】女巫的解藥已用完（第${peacefulNights.join('、')}天是平安夜），今後自刀無意義。`
+    : '';
+
   const userPrompt = `【遊戲情境】
 第${ctx.day}天白天 | 我是 ${ctx.myNumber}號${ctx.myName}（身份：${ctx.myRole}）
 ${ctx.isWolf ? `我的狼人同伴：${ctx.wolfAllies}` : ''}
 存活玩家：${ctx.alivePlayers}
-已死亡：${ctx.deadPlayers}${witchExtra}
+已死亡：${ctx.deadPlayers}${witchExtra}${peacefulNote}
 
 【本輪討論記錄】
 ${history}
@@ -185,21 +203,34 @@ ${history}
 // ── 狼人選擇擊殺目標 ──────────────────────────────────
 
 export async function aiWolfChooseTarget(bot, game) {
-  const targets = game.alivePlayers.filter(p => p.id !== bot.id);
+  const ctx = buildContext(bot, game);
+
+  // 平安夜 = 女巫解藥已用，狼人知道，不能再自刀（自刀無意義）
+  const witchSaveUsed = game.witchSaveUsed;
+  // 如果解藥還沒用，可以考慮自刀讓女巫浪費解藥；解藥用了就不要自刀
+  const canSelfKill = !witchSaveUsed;
+
+  const allTargets = game.alivePlayers.filter(p => p.id !== bot.id);
+  const goodTargets = allTargets.filter(p => p.team !== TEAM.WEREWOLF);
+  // 若解藥已用，只殺好人；若解藥未用，也可以殺狼人同伴（讓女巫浪費解藥）
+  const targets = canSelfKill ? allTargets : goodTargets;
   if (!targets.length) return null;
 
-  const ctx = buildContext(bot, game);
   const targetList = targets.map(p =>
     `${p.number}號${p.displayName}（${p.team === TEAM.WEREWOLF ? '狼人同伴' : '好人'}）`
   ).join('、');
 
+  const witchNote = witchSaveUsed
+    ? '女巫的解藥已經用完（曾有平安夜），不需要再考慮自刀。只殺好人。'
+    : '女巫解藥尚未使用。可以考慮殺狼人同伴讓女巫浪費解藥，但通常不建議。';
+
   const systemPrompt = `你是狼人殺的狼人，現在要選擇今晚的擊殺目標。
 優先順序：預言家 > 女巫 > 獵人 > 平民。
-你也可以殺狼人同伴作為掩護，但通常不建議。
+${witchNote}
 只輸出一個數字（玩家編號），不加任何說明。`;
 
   const userPrompt = `我的狼人同伴：${ctx.wolfAllies}
-存活玩家：${targetList}
+可選目標：${targetList}
 已死亡：${ctx.deadPlayers}
 選擇今晚擊殺目標的編號：`;
 
@@ -208,11 +239,10 @@ export async function aiWolfChooseTarget(bot, game) {
     const num = parseInt(text.trim());
     if (targets.map(p => p.number).includes(num)) return num;
   }
-  // 優先殺神職
-  const specials = targets.filter(p => p.team !== TEAM.WEREWOLF &&
-    [ROLES.SEER, ROLES.WITCH, ROLES.HUNTER].includes(p.role));
+  // Fallback：優先殺神職
+  const specials = goodTargets.filter(p => [ROLES.SEER, ROLES.WITCH, ROLES.HUNTER].includes(p.role));
   if (specials.length) return randomChoice(specials.map(p => p.number));
-  return randomChoice(targets.filter(p => p.team !== TEAM.WEREWOLF).map(p => p.number) || targets.map(p => p.number));
+  return randomChoice(goodTargets.length ? goodTargets.map(p => p.number) : targets.map(p => p.number));
 }
 
 // ── 預言家選擇查驗目標 ────────────────────────────────
