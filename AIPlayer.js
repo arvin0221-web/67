@@ -52,11 +52,10 @@ function buildContext(bot, game) {
 // 核心 Groq 呼叫
 async function callGroq(systemPrompt, userPrompt, maxTokens = 300) {
   const client = getClient();
-  console.log('[AI] callGroq called, client:', client ? 'OK' : 'NULL', '| KEY:', process.env.GROQ_API_KEY ? 'SET' : 'NOT SET');
   if (!client) return null;
   try {
     const res = await client.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'llama-3.1-8b-instant',
       max_tokens: maxTokens,
       temperature: 0.85,
       messages: [
@@ -83,11 +82,16 @@ function parseJSON(text) {
   return null;
 }
 
-// 從回應中取出 <speech> 標籤內容
+// 從回應中取出 <speech> 標籤內容，找不到就清除 <thinking> 後直接返回
 function extractSpeech(text) {
   if (!text) return null;
-  const match = text.match(/<speech>([\s\S]*?)<\/speech>/i);
-  return match ? match[1].trim() : null;
+  // 優先找 <speech> 標籤
+  const speechMatch = text.match(/<speech>([\s\S]*?)<\/speech>/i);
+  if (speechMatch) return speechMatch[1].trim();
+  // 移除 <thinking>...</thinking> 區塊後返回剩餘文字
+  const withoutThinking = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+  if (withoutThinking) return withoutThinking.slice(0, 150);
+  return null;
 }
 
 // ── 白天發言（雙層思維）──────────────────────────────────
